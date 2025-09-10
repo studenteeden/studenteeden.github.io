@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>전투기 게임</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+            background-color: green;
+            border: 2px solid white;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 캔버스 크기를 창 크기에 맞게 설정 (세로로 길쭉하게)
+        canvas.width = window.innerWidth * 0.6;
+        canvas.height = window.innerHeight * 0.9;
+
+        // 플레이어(전투기) 객체 정의
+        const player = {
+            x: 0, // 화면 가로 중앙
+            y: canvas.height / 2 - 100, // 화면 아래쪽에서 시작
+            width: 30,
+            height: 40,
+            speed: 3,
+            color: 'red'
+        };
+
+        const bullets = [];
+        const bulletSpeed = 10;
+        let lastShotTime = 0;
+        const shootCooldown = 100; // 0.1초
+
+        const missiles = [];
+        const missileSpeed = 8;
+        const missileDeceleration = 0.98; // 감속 계수
+        let lastMissileTime = 0;
+        const missileCooldown = 30000; // 30초
+
+        const explosions = [];
+        
+        // 배경 요소들
+        const backgroundElements = [];
+        const backgroundSpeed = 1.5; // 속도 감소
+
+
+        const keys = {};
+
+        // 키보드 이벤트 리스너
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+        });
+        
+        // 창 크기 변경 시 캔버스 크기 재조정
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth * 0.6;
+            canvas.height = window.innerHeight * 0.9;
+            player.y = canvas.height / 2 - 100;
+        });
+        
+        // 배경 요소 생성 함수 (적 추가)
+        function createBackgroundElement(initialY) {
+            const rand = Math.random();
+            let type;
+            if (rand > 0.975) { // 2.5% 확률로 적 생성
+                type = 'tank';
+            } else if (rand > 0.4875) { // ~48.75% 확률로 나무
+                type = 'tree';
+            } else { // ~48.75% 확률로 바위
+                type = 'rock';
+            }
+            
+            let x;
+            const y = initialY;
+
+            if (type === 'tank') {
+                let isPositionSafe = false;
+                let maxTries = 20; // 안전한 위치를 찾기 위한 최대 시도 횟수
+                
+                while (!isPositionSafe && maxTries > 0) {
+                    x = Math.random() * canvas.width - canvas.width / 2;
+                    isPositionSafe = true; // 일단 안전하다고 가정
+
+                    // 다른 배경 요소와 너무 가까운지 확인
+                    for (const el of backgroundElements) {
+                        if (el.type === 'tree' || el.type === 'rock') {
+                            const dx = el.x - x;
+                            const dy = el.y - y;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            
+                            if (distance < 70) { // 70픽셀보다 가까우면 겹치는 것으로 간주
+                                isPositionSafe = false;
+                                break; // 충돌 발견, 새 위치 검색
+                            }
+                        }
+                    }
+                    maxTries--;
+                }
+
+                return { 
+                    type: 'tank', 
+                    x, y, 
+                    bodyWidth: 30,
+                    bodyHeight: 42,
+                    turretSize: 18,
+                    cannonWidth: 7,
+                    cannonHeight: 24,
+                    color: '#F5F5DC',
+                    turretColor: '#C1A77C',
+                    angle: Math.random() * Math.PI * 2,
+                    destroyed: false // 파괴 상태 추가
+                };
+            } else {
+                // 나무와 바위는 기존 방식대로 생성
+                x = Math.random() * canvas.width - canvas.width / 2;
+
+                if (type === 'tree') {
+                    const leafOffsets = [];
+                    const numLeaves = Math.floor(Math.random() * 3) + 4;
+                     for (let i = 0; i < numLeaves; i++) {
+                        leafOffsets.push({
+                            x: (Math.random() - 0.5) * 30,
+                            y: (Math.random() - 0.5) * 30,
+                            radius: Math.random() * 10 + 10
+                        });
+                    }
+                    return { type: 'tree', x, y, leafOffsets };
+                } else { // rock
+                    const vertices = [];
+                    const numVertices = Math.floor(Math.random() * 4) + 5; // 5-8개의 꼭짓점
+                    const size = Math.random() * 20 + 15;
+                    for (let i = 0; i < numVertices; i++) {
+                        const angle = (i / numVertices) * Math.PI * 2;
+                        const radius = size * (Math.random() * 0.4 + 0.8);
+                        vertices.push({
+                            x: Math.cos(angle) * radius,
+                            y: Math.sin(angle) * radius
+                        });
+                    }
+                    return { type: 'rock', x, y, vertices };
+                }
+            }
+        }
+        
+        // 배경 초기화
+        function initializeBackground() {
+            // 생성 빈도 감소
+            for (let i = 0; i < 20; i++) {
+                const y = Math.random() * canvas.height - canvas.height / 2;
+                backgroundElements.push(createBackgroundElement(y));
+            }
+        }
+        
+        // 배경 그리기 및 업데이트 함수 (적 그리기 추가)
+        function handleBackground() {
+            for (let i = 0; i < backgroundElements.length; i++) {
+                let el = backgroundElements[i];
+                el.y += backgroundSpeed;
+
+                ctx.save();
+                ctx.translate(el.x, el.y);
+                
+                if (el.type === 'tree') {
+                    ctx.fillStyle = '#90ee90'; // 연두색
+                    el.leafOffsets.forEach(offset => {
+                         ctx.beginPath();
+                         ctx.arc(offset.x, offset.y, offset.radius, 0, Math.PI * 2);
+                         ctx.fill();
+                    });
+                } else if (el.type === 'rock') {
+                    ctx.fillStyle = '#808080'; // 회색
+                    ctx.beginPath();
+                    ctx.moveTo(el.vertices[0].x, el.vertices[0].y);
+                    for (let j = 1; j < el.vertices.length; j++) {
+                        ctx.lineTo(el.vertices[j].x, el.vertices[j].y);
+                    }
+                    ctx.closePath();
+                    ctx.fill();
+                } else if (el.type === 'tank') {
+                    ctx.rotate(el.angle); // 탱크 회전
+                    // 몸체 그리기 (항상)
+                    ctx.fillStyle = el.color;
+                    ctx.fillRect(-el.bodyWidth / 2, -el.bodyHeight / 2, el.bodyWidth, el.bodyHeight);
+                    
+                    if (!el.destroyed) {
+                        // 파괴되지 않았을 때: 포탑과 포신 그리기
+                        ctx.fillStyle = el.turretColor;
+                        ctx.fillRect(-el.turretSize / 2, -el.turretSize / 2, el.turretSize, el.turretSize);
+                        ctx.fillRect(-el.cannonWidth / 2, -el.turretSize / 2 - el.cannonHeight, el.cannonWidth, el.cannonHeight);
+                    } else {
+                        // 파괴되었을 때: 몸체 위에 파손 흔적 그리기
+                        ctx.fillStyle = '#333';
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+                        ctx.lineTo(-el.turretSize, -el.turretSize / 3);
+                        ctx.lineTo(-el.turretSize / 2, -el.turretSize);
+                        ctx.lineTo(el.turretSize / 2, -el.turretSize);
+                        ctx.lineTo(el.turretSize, 0);
+                        ctx.lineTo(el.turretSize / 3, el.turretSize / 2);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
+                
+                ctx.restore();
+
+                // 화면 아래로 벗어나면, 이 요소를 새로운 요소로 교체합니다.
+                if (el.y > canvas.height / 2 + 50) {
+                    const newY = -canvas.height / 2 - (Math.random() * canvas.height + 50);
+                    backgroundElements[i] = createBackgroundElement(newY);
+                }
+            }
+        }
+
+
+        function drawPlayer() {
+            ctx.save();
+            ctx.translate(player.x, player.y);
+
+            // 몸통 앞부분 (회색)
+            ctx.fillStyle = '#a9a9a9';
+            ctx.beginPath();
+            ctx.moveTo(0, -player.height);
+            ctx.lineTo(player.width / 4, -player.height + 10);
+            ctx.lineTo(-player.width / 4, -player.height + 10);
+            ctx.closePath();
+            ctx.fill();
+
+            // 몸통 (원통)
+            ctx.fillStyle = player.color;
+            ctx.fillRect(-player.width / 4, -player.height + 10, player.width / 2, player.height - 5);
+            ctx.fillStyle = '#c0c0c0'; // 회색 하이라이트
+            ctx.fillRect(-player.width / 8, -player.height + 10, player.width / 4, player.height - 5);
+
+            // 날개 크기 및 위치 조정
+            const wingWidth = player.width; // 날개 너비 줄임
+            const wingRearY = -12; // 날개 뒤쪽 y 위치
+            const wingFrontY = -28; // 날개 앞쪽 y 위치
+
+            // 왼쪽 날개
+            ctx.fillStyle = '#a9a9a9';
+            ctx.beginPath();
+            ctx.moveTo(-player.width / 4, wingRearY);
+            ctx.lineTo(-player.width / 4 - wingWidth, wingRearY);
+            ctx.lineTo(-player.width / 4, wingFrontY);
+            ctx.closePath();
+            ctx.fill();
+
+            // 오른쪽 날개
+            ctx.beginPath();
+            ctx.moveTo(player.width / 4, wingRearY);
+            ctx.lineTo(player.width / 4 + wingWidth, wingRearY);
+            ctx.lineTo(player.width / 4, wingFrontY);
+            ctx.closePath();
+            ctx.fill();
+
+            // 날개 아래 돌출부 (총구)
+            const protrusionWidth = 5;
+            const protrusionHeight = 10;
+            
+            function drawProtrusion(wingX, wingTipY) {
+                ctx.save();
+                ctx.translate(wingX, wingTipY);
+
+                ctx.fillStyle = 'red';
+                // 사각형의 위쪽 중앙이 (wingX, wingTipY)에 오도록 아래로 그립니다.
+                ctx.fillRect(-protrusionWidth / 2, 0, protrusionWidth, protrusionHeight);
+
+                ctx.restore();
+            }
+            
+            // 돌출부 위치 계산 (줄어든 날개 너비에 맞춤)
+            const innerDist = 10;
+            const outerDist = 25;
+
+            // 안쪽 돌출부
+            const innerWingPointY = wingRearY + (innerDist / wingWidth) * (wingFrontY - wingRearY);
+            const innerWingPointX_L = -player.width / 4 - innerDist;
+            const innerWingPointX_R = player.width / 4 + innerDist;
+            drawProtrusion(innerWingPointX_L, innerWingPointY);
+            drawProtrusion(innerWingPointX_R, innerWingPointY);
+
+            // 바깥쪽 돌출부
+            const outerWingPointY = wingRearY + (outerDist / wingWidth) * (wingFrontY - wingRearY);
+            const outerWingPointX_L = -player.width / 4 - outerDist;
+            const outerWingPointX_R = player.width / 4 + outerDist;
+            drawProtrusion(outerWingPointX_L, outerWingPointY);
+            drawProtrusion(outerWingPointX_R, outerWingPointY);
+
+
+            ctx.restore();
+        }
+        
+        function shoot() {
+            const now = Date.now();
+            if (now - lastShotTime < shootCooldown) return;
+            lastShotTime = now;
+            
+            // drawPlayer와 동일한 날개 값 사용
+            const wingWidth = player.width;
+            const wingRearY = -12;
+            const wingFrontY = -28;
+
+            const protrusionPositions = [10, 25]; // 안쪽, 바깥쪽 돌출부 거리
+
+            protrusionPositions.forEach(dist => {
+                // 날개 경사면의 y좌표 계산
+                const relativeY = wingRearY + (dist / wingWidth) * (wingFrontY - wingRearY);
+
+                // 왼쪽 총알
+                const bulletX_L = player.x - player.width / 4 - dist;
+                const bulletY_L = player.y + relativeY;
+                bullets.push({ x: bulletX_L, y: bulletY_L, width: 4, height: 15 });
+
+                // 오른쪽 총알
+                const bulletX_R = player.x + player.width / 4 + dist;
+                const bulletY_R = player.y + relativeY;
+                bullets.push({ x: bulletX_R, y: bulletY_R, width: 4, height: 15 });
+            });
+        }
+
+        function fireMissile() {
+            const now = Date.now();
+            if (now - lastMissileTime < missileCooldown) return;
+            lastMissileTime = now;
+
+            const initialWidth = 10;
+            const initialHeight = 25;
+            missiles.push({
+                x: player.x,
+                y: player.y - player.height,
+                width: initialWidth,
+                height: initialHeight,
+                initialWidth: initialWidth,
+                initialHeight: initialHeight,
+                speed: missileSpeed,
+                firedTime: Date.now()
+            });
+        }
+
+        function handleBullets() {
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                bullet.y -= bulletSpeed;
+
+                const gradient = ctx.createLinearGradient(bullet.x - bullet.width / 2, bullet.y, bullet.x + bullet.width / 2, bullet.y);
+                gradient.addColorStop(0, 'orange');
+                gradient.addColorStop(0.5, 'yellow');
+                gradient.addColorStop(1, 'orange');
+
+                ctx.fillStyle = gradient;
+                ctx.fillRect(bullet.x - bullet.width / 2, bullet.y - bullet.height, bullet.width, bullet.height);
+
+                if (bullet.y < -canvas.height / 2) {
+                    bullets.splice(i, 1);
+                }
+            }
+        }
+        
+        function handleMissiles() {
+            for (let i = missiles.length - 1; i >= 0; i--) {
+                const missile = missiles[i];
+                missile.y -= missile.speed;
+                missile.speed *= missileDeceleration; 
+
+                const sizeRatio = Math.max(missile.speed / missileSpeed, 0.1);
+                missile.width = missile.initialWidth * sizeRatio;
+                missile.height = missile.initialHeight * sizeRatio;
+
+                if (Date.now() - missile.firedTime > 1000) {
+                    explosions.push({ x: missile.x, y: missile.y, radius: 0, maxRadius: 100, creationTime: Date.now() });
+                    missiles.splice(i, 1);
+                    continue;
+                }
+
+                ctx.fillStyle = 'lightgrey';
+                ctx.fillRect(missile.x - missile.width / 2, missile.y - missile.height, missile.width, missile.height);
+                ctx.fillStyle = 'red';
+                ctx.fillRect(missile.x - missile.width / 4, missile.y - missile.height - 3, missile.width / 2, 3);
+
+
+                if (missile.y < -canvas.height / 2) {
+                    missiles.splice(i, 1);
+                }
+            }
+        }
+        
+        function handleExplosions() {
+             for (let i = explosions.length - 1; i >= 0; i--) {
+                const explosion = explosions[i];
+                
+                const duration = 700; 
+                const elapsed = Date.now() - explosion.creationTime;
+
+                if (elapsed > duration) {
+                    explosions.splice(i, 1);
+                    continue;
+                }
+
+                const progress = elapsed / duration;
+                const easeOutProgress = 1 - Math.pow(1 - progress, 3);
+                explosion.radius = explosion.maxRadius * easeOutProgress;
+                
+                const alpha = 1 - progress;
+
+                const gradient = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, explosion.radius);
+                gradient.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
+                gradient.addColorStop(0.4, `rgba(255, 255, 0, ${alpha})`);
+                gradient.addColorStop(0.8, `rgba(255, 100, 0, ${alpha * 0.7})`);
+                gradient.addColorStop(1, `rgba(255, 0, 0, 0)`);
+
+
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(explosion.x, explosion.y, explosion.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        
+        function handleCollisions() {
+            // 총알 vs 탱크
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                for (let j = 0; j < backgroundElements.length; j++) {
+                    const tank = backgroundElements[j];
+                    if (tank.type === 'tank' && !tank.destroyed) {
+                        const dx = bullet.x - tank.x;
+                        const dy = bullet.y - tank.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        const tankRadius = Math.max(tank.bodyWidth, tank.bodyHeight) / 2;
+
+                        if (distance < tankRadius) {
+                            tank.destroyed = true;
+                            // 미사일 폭발보다 작은 폭발 생성
+                            explosions.push({ x: tank.x, y: tank.y, radius: 0, maxRadius: 60, creationTime: Date.now() });
+                            bullets.splice(i, 1);
+                            break; // 총알이 사라졌으므로 다음 총알 검사
+                        }
+                    }
+                }
+            }
+
+            // 미사일 폭발 vs 탱크
+            for (const explosion of explosions) {
+                // 미사일 폭발(큰 것)만 다른 탱크를 파괴하도록 함
+                if (explosion.maxRadius < 100) continue;
+
+                for (const tank of backgroundElements) {
+                    if (tank.type === 'tank' && !tank.destroyed) {
+                        const dx = explosion.x - tank.x;
+                        const dy = explosion.y - tank.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+
+                        // 폭발 반경 안에 탱크가 있으면 파괴
+                        if (distance < explosion.radius) {
+                            tank.destroyed = true;
+                            explosions.push({ x: tank.x, y: tank.y, radius: 0, maxRadius: 60, creationTime: Date.now() });
+                        }
+                    }
+                }
+            }
+        }
+
+
+        function updatePlayerPosition() {
+            // 수정된 날개 너비에 맞게 경계 재설정
+            const wingSpan = player.width + (player.width * 2); 
+            const leftBoundary = -canvas.width / 2 + wingSpan / 2;
+            const rightBoundary = canvas.width / 2 - wingSpan / 2;
+            const topBoundary = -canvas.height / 2 + player.height;
+            const bottomBoundary = canvas.height / 2;
+
+            if (keys['KeyW'] && player.y > topBoundary) player.y -= player.speed;
+            if (keys['KeyS'] && player.y < bottomBoundary) player.y += player.speed;
+            if (keys['KeyA'] && player.x > leftBoundary) player.x -= player.speed;
+            if (keys['KeyD'] && player.x < rightBoundary) player.x += player.speed;
+            
+            if (keys['Space']) shoot();
+            if (keys['KeyE']) fireMissile();
+        }
+
+        function gameLoop() {
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+
+            // 캔버스 지우기 (초록색 배경)
+            ctx.fillStyle = 'green';
+            ctx.fillRect(-canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+            
+            handleBackground();
+            updatePlayerPosition();
+            handleCollisions(); // 충돌 감지 추가
+
+            drawPlayer();
+            handleBullets();
+            handleMissiles();
+            handleExplosions();
+
+            ctx.restore();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 게임 시작
+        initializeBackground();
+        gameLoop();
+    </script>
+</body>
+</html>
+
