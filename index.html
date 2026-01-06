@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>전투기 게임</title>
+    <title>레비우스 (REBIUS)</title>
     <style>
         body {
             margin: 0;
@@ -13,229 +13,1180 @@
             justify-content: center;
             align-items: center;
             height: 100vh;
+            font-family: Arial, sans-serif;
         }
         canvas {
             display: block;
             background-color: green;
             border: 2px solid white;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
     <canvas id="gameCanvas"></canvas>
     <script>
+        // --- CORE SETUP & CONSTANTS ---
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
 
-        // 캔버스 크기를 창 크기에 맞게 설정 (세로로 길쭉하게)
-        canvas.width = window.innerWidth * 0.6;
-        canvas.height = window.innerHeight * 0.9;
+        // 배경 최적화를 위한 오프스크린 캔버스
+        const bgCanvas = document.createElement('canvas');
+        const bgCtx = bgCanvas.getContext('2d');
 
-        // 플레이어(전투기) 객체 정의
+        const NUM_BACKGROUND_ELEMENTS = 20;
+        const backgroundSpeed = 1.5;
+        const bulletSpeed = 10;
+        let enemyBulletSpeed;
+        const missileSpeed = 8;
+        const missileDeceleration = 0.98;
+        const shootCooldown = 100;
+        const missileCooldown = 30000;
+
+        // --- GAME STATE VARIABLES ---
+        let gameState = 'startScreen';
+        let currentDifficulty = 'REGULAR';
+        let keys = {};
+        let bullets = [];
+        let enemyBullets = [];
+        let missiles = [];
+        let bossMissiles = [];
+        let explosions = [];
+        let powerUps = [];
+        let backgroundElements = [];
+        let river = null;
+        let score;
+        let nextEnemyId = 0;
+        let boss = null;
+        let bossDefeated = false;
+       
+        let gameStartTime;
+        let lastShotTime = 0;
+        let lastMissileTime = 0;
+        let pauseStartTime = 0;
+
+        let currentTankSpawnRate;
+        let initialTankSpawnRate;
+        let maxTankSpawnRate;
+        const timeToMaxSpawnRate = 120000;
+        let openingAnim = { progress: 0, duration: 800 };
+        let eliteSpawnRate;
+        let bossWarning = { active: false, shown: false, startTime: 0, pendingSpawn: false, spawnStartTime: 0 };
+        let bossDestroyedMessage = { active: false, startTime: 0, duration: 4000 };
+        let isBossSequenceActive = false;
+
         const player = {
-            x: 0, // 화면 가로 중앙
-            y: canvas.height / 2 - 100, // 화면 아래쪽에서 시작
+            x: 0,
+            y: 0,
             width: 30,
             height: 40,
             speed: 3,
-            color: 'red'
+            color: 'red',
+            health: 6,
+            maxHealth: 6,
+            isPoweredUp: false,
+            powerUpEndTime: 0,
+            isShielded: false,
+            shieldEndTime: 0
         };
 
-        const bullets = [];
-        const bulletSpeed = 10;
-        let lastShotTime = 0;
-        const shootCooldown = 100; // 0.1초
+        // --- UI ELEMENT DEFINITIONS ---
+        const healthBarInfo = { x: 20, y: 20, segmentWidth: 25, segmentHeight: 15, spacing: 5 };
+        let healthBarTotalWidth;
+        let healthBarContainerWidth;
+        const restartButton = {};
+        const homeButton = {};
+        const pauseButton = {};
+        let pauseWindow = {};
+        let closeButton = {};
+        const homePauseButton = {};
+        const easyButton = {}, regularButton = {}, hardButton = {};
+        let metalPlates = [];
 
-        const missiles = [];
-        const missileSpeed = 8;
-        const missileDeceleration = 0.98; // 감속 계수
-        let lastMissileTime = 0;
-        const missileCooldown = 30000; // 30초
+        // --- RESIZE & INIT ---
+        function resizeCanvas() {
+            const aspectRatio = 0.7 / 0.9;
+            const windowWidth = Math.max(window.innerWidth, 1);
+            const windowHeight = Math.max(window.innerHeight, 1);
+            const windowRatio = windowWidth / windowHeight;
 
-        const explosions = [];
-        
-        // 배경 요소들
-        const backgroundElements = [];
-        const backgroundSpeed = 1.5; // 속도 감소
-
-
-        const keys = {};
-
-        // 키보드 이벤트 리스너
-        window.addEventListener('keydown', (e) => {
-            keys[e.code] = true;
-        });
-        window.addEventListener('keyup', (e) => {
-            keys[e.code] = false;
-        });
-        
-        // 창 크기 변경 시 캔버스 크기 재조정
-        window.addEventListener('resize', () => {
-            canvas.width = window.innerWidth * 0.6;
-            canvas.height = window.innerHeight * 0.9;
-            player.y = canvas.height / 2 - 100;
-        });
-        
-        // 배경 요소 생성 함수 (적 추가)
-        function createBackgroundElement(initialY) {
-            const rand = Math.random();
-            let type;
-            if (rand > 0.975) { // 2.5% 확률로 적 생성
-                type = 'tank';
-            } else if (rand > 0.4875) { // ~48.75% 확률로 나무
-                type = 'tree';
-            } else { // ~48.75% 확률로 바위
-                type = 'rock';
+            if (windowRatio > aspectRatio) {
+                canvas.height = windowHeight * 0.95;
+                canvas.width = canvas.height * aspectRatio;
+            } else {
+                canvas.width = windowWidth * 0.95;
+                canvas.height = canvas.width / aspectRatio;
             }
-            
-            let x;
+           
+            // 캔버스 크기가 0이 되지 않도록 안전장치
+            canvas.width = Math.max(canvas.width, 1);
+            canvas.height = Math.max(canvas.height, 1);
+
+            bgCanvas.width = canvas.width;
+            bgCanvas.height = canvas.height;
+
+            if (player.y === 0) {
+                player.y = canvas.height / 2 - 100;
+            }
+           
+            updateUIElementPositions();
+           
+            if (gameState === 'startScreen') {
+                initializeStartScreen();
+            }
+        }
+
+        function updateUIElementPositions() {
+            healthBarTotalWidth = (healthBarInfo.segmentWidth + healthBarInfo.spacing) * player.maxHealth - healthBarInfo.spacing;
+            healthBarContainerWidth = healthBarTotalWidth + 20;
+
+            restartButton.width = 200;
+            restartButton.height = 50;
+            restartButton.x = canvas.width / 2 - 100;
+            restartButton.y = canvas.height / 2 + 50;
+           
+            homeButton.width = 200;
+            homeButton.height = 50;
+            homeButton.x = canvas.width / 2 - 100;
+            homeButton.y = restartButton.y + restartButton.height + 15;
+
+            pauseButton.x = healthBarInfo.x - 10 + healthBarContainerWidth + 10;
+            pauseButton.y = 10;
+            pauseButton.width = 40;
+            pauseButton.height = 40;
+           
+            pauseWindow.width = 300;
+            pauseWindow.height = 200;
+            pauseWindow.x = (canvas.width - pauseWindow.width) / 2;
+            pauseWindow.y = (canvas.height - pauseWindow.height) / 2;
+
+            closeButton.width = 30;
+            closeButton.height = 30;
+            closeButton.x = pauseWindow.x + pauseWindow.width - 35;
+            closeButton.y = pauseWindow.y + 5;
+
+            homePauseButton.width = 180;
+            homePauseButton.height = 50;
+            homePauseButton.x = pauseWindow.x + (pauseWindow.width - homePauseButton.width) / 2;
+            homePauseButton.y = pauseWindow.y + 120;
+
+            const buttonWidth = 180;
+            const buttonHeight = 60;
+            const buttonSpacing = 20;
+            const buttonX = (canvas.width - buttonWidth) / 2;
+            const startY = canvas.height / 2 - 20;
+
+            easyButton.x = buttonX;
+            easyButton.y = startY;
+            easyButton.width = buttonWidth;
+            easyButton.height = buttonHeight;
+
+            regularButton.x = buttonX;
+            regularButton.y = startY + buttonHeight + buttonSpacing;
+            regularButton.width = buttonWidth;
+            regularButton.height = buttonHeight;
+
+            hardButton.x = buttonX;
+            hardButton.y = startY + (buttonHeight + buttonSpacing) * 2;
+            hardButton.width = buttonWidth;
+            hardButton.height = buttonHeight;
+        }
+
+        // --- EVENT LISTENERS ---
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Escape') togglePause();
+            else if (gameState === 'playing') keys[e.code] = true;
+        });
+        window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+        window.addEventListener('resize', resizeCanvas);
+
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            if (gameState === 'startScreen') {
+                if(isMouseInButton(mouseX, mouseY, easyButton)) startGame('EASY');
+                if(isMouseInButton(mouseX, mouseY, regularButton)) startGame('REGULAR');
+                if(isMouseInButton(mouseX, mouseY, hardButton)) startGame('HARD');
+            } else if (gameState === 'gameOver') {
+                if (isMouseInButton(mouseX, mouseY, restartButton)) startGame(currentDifficulty);
+                if (isMouseInButton(mouseX, mouseY, homeButton)) {
+                     gameState = 'startScreen';
+                     initializeStartScreen();
+                }
+            } else {
+                if (gameState === 'playing' && isMouseInButton(mouseX, mouseY, pauseButton)) {
+                    togglePause();
+                }
+                if (gameState === 'paused') {
+                    if (isMouseInButton(mouseX, mouseY, closeButton)) {
+                       togglePause();
+                    }
+                    if (isMouseInButton(mouseX, mouseY, homePauseButton)) {
+                        gameState = 'startScreen';
+                        initializeStartScreen();
+                    }
+                }
+            }
+        });
+
+        function isMouseInButton(mx, my, button) {
+            return mx >= button.x && mx <= button.x + button.width && my >= button.y && my <= button.y + button.height;
+        }
+
+        // --- GAME STATE MANAGEMENT ---
+        function setDifficulty(level) {
+            currentDifficulty = level;
+            if (level === 'EASY') {
+                player.maxHealth = 8;
+                enemyBulletSpeed = 5;
+                initialTankSpawnRate = 0.05;
+                maxTankSpawnRate = 0.08;
+                eliteSpawnRate = 0.05;
+            } else if (level === 'HARD') {
+                player.maxHealth = 4;
+                enemyBulletSpeed = 9;
+                initialTankSpawnRate = 0.12;
+                maxTankSpawnRate = 0.20;
+                eliteSpawnRate = 0.20;
+            } else { // REGULAR
+                player.maxHealth = 6;
+                enemyBulletSpeed = 7;
+                initialTankSpawnRate = 0.08;
+                maxTankSpawnRate = 0.12;
+                eliteSpawnRate = 0.12;
+            }
+        }
+
+        function startGame(level) {
+            setDifficulty(level);
+            resetGame();
+            gameState = 'transitionIn';
+            openingAnim.progress = 0;
+        }
+
+        function togglePause() {
+            if (gameState === 'playing') {
+                gameState = 'paused';
+                pauseStartTime = Date.now();
+            } else if (gameState === 'paused') {
+                const pausedDuration = Date.now() - pauseStartTime;
+                gameStartTime += pausedDuration;
+                if(player.isPoweredUp) player.powerUpEndTime += pausedDuration;
+                if(player.isShielded) player.shieldEndTime += pausedDuration;
+                if(bossWarning.active) bossWarning.startTime += pausedDuration;
+                if(bossWarning.pendingSpawn) bossWarning.spawnStartTime += pausedDuration;
+                backgroundElements.forEach(el => {
+                    if (el.type === 'tank' || el.type === 'enemyFighter') {
+                        el.lastFiredTime += pausedDuration;
+                        if (el.spawnTime) el.spawnTime += pausedDuration;
+                    }
+                });
+                if (boss) {
+                    boss.lastFiredTime += pausedDuration;
+                    boss.lastMissileFiredTime += pausedDuration;
+                }
+                lastMissileTime += pausedDuration;
+                gameState = 'playing';
+            }
+        }
+       
+        function resetGame() {
+            player.health = player.maxHealth;
+            player.x = 0;
+            player.y = canvas.height / 2 - 100;
+            player.isPoweredUp = false;
+            player.powerUpEndTime = 0;
+            player.isShielded = false;
+            player.shieldEndTime = 0;
+            bullets = [];
+            enemyBullets = [];
+            missiles = [];
+            bossMissiles = [];
+            explosions = [];
+            powerUps = [];
+            backgroundElements = [];
+            river = null;
+            score = 0;
+            boss = null;
+            bossDefeated = false;
+            isBossSequenceActive = false;
+            bossWarning = { active: false, shown: false, startTime: 0, pendingSpawn: false, spawnStartTime: 0 };
+            bossDestroyedMessage = { active: false, startTime: 0, duration: 4000 };
+            gameStartTime = Date.now();
+            lastShotTime = 0;
+            lastMissileTime = 0;
+            currentTankSpawnRate = initialTankSpawnRate;
+            initializeBackground();
+            updateUIElementPositions();
+        }
+
+        // --- OBJECT CREATION ---
+        function createScrollingRiver() {
+             const riverWidth = canvas.width * (Math.random() * 0.15 + 0.20);
+             const riverHeight = canvas.height * 2.5;
+             river = {
+                 baseX: (Math.random() * (canvas.width - riverWidth)) - (canvas.width / 2),
+                 y: -canvas.height / 2 - riverHeight,
+                 width: riverWidth,
+                 height: riverHeight,
+                 sandBankWidth: 20,
+                 amplitude: Math.random() * 100 + 70,
+                 frequency: (Math.random() * 0.002 + 0.001) * (Math.random() < 0.5 ? 1 : -1),
+                 phase: Math.random() * Math.PI * 2
+            };
+        }
+
+        function createBackgroundElement(initialY) {
+            let type;
+            let isBoat = false;
+            let x = Math.random() * canvas.width - canvas.width / 2;
             const y = initialY;
 
-            if (type === 'tank') {
-                let isPositionSafe = false;
-                let maxTries = 20; // 안전한 위치를 찾기 위한 최대 시도 횟수
-                
-                while (!isPositionSafe && maxTries > 0) {
-                    x = Math.random() * canvas.width - canvas.width / 2;
-                    isPositionSafe = true; // 일단 안전하다고 가정
+            let onRiver = river && y > river.y && y < river.y + river.height &&
+                          x > (river.baseX + Math.sin((y - river.y) * river.frequency + river.phase) * river.amplitude - river.width / 2) &&
+                          x < (river.baseX + Math.sin((y - river.y) * river.frequency + river.phase) * river.amplitude + river.width / 2);
 
-                    // 다른 배경 요소와 너무 가까운지 확인
-                    for (const el of backgroundElements) {
-                        if (el.type === 'tree' || el.type === 'rock') {
-                            const dx = el.x - x;
-                            const dy = el.y - y;
-                            const distance = Math.sqrt(dx * dx + dy * dy);
-                            
-                            if (distance < 70) { // 70픽셀보다 가까우면 겹치는 것으로 간주
-                                isPositionSafe = false;
-                                break; // 충돌 발견, 새 위치 검색
+            if (onRiver) {
+                if (Date.now() - gameStartTime < 5000 || isBossSequenceActive) return null;
+                if (Math.random() < 0.50) { type = 'tank'; isBoat = true; }
+                else { return null; }
+            } else {
+                if (Date.now() - gameStartTime > 5000 && !isBossSequenceActive && Math.random() < currentTankSpawnRate) {
+                    type = (Math.random() < 0.45) ? 'enemyFighter' : 'tank';
+                } else {
+                    type = (Math.random() < 0.5) ? 'tree' : 'rock';
+                }
+            }
+           
+            const isUpgraded = Math.random() < eliteSpawnRate;
+
+            if (type === 'enemyFighter') {
+                const sizeMultiplier = isUpgraded ? 1.2 : 1;
+                return {
+                    id: nextEnemyId++, type, x, y, isUpgraded,
+                    bodyWidth: 30 * sizeMultiplier, bodyHeight: 40 * sizeMultiplier, speed: 1,
+                    color: isUpgraded ? '#A5935F' : '#F5F5DC',
+                    detailColor1: isUpgraded ? '#8B4513' : '#C1A77C',
+                    detailColor2: isUpgraded ? '#696969' : '#A9A9A9',
+                    angle: Math.PI, lastFiredTime: Date.now() + Math.random() * 3000, destroyed: false,
+                    health: isUpgraded ? 10 : 1,
+                    spawnTime: Date.now(),
+                    lifeSpan: isUpgraded ? 45000 : 15000,
+                    isEscaping: false, isApproachingCenter: true, lateralPhase: Math.random() * Math.PI * 2
+                };
+            } else if (type === 'tank') {
+                const sizeMultiplier = isUpgraded ? 1.2 : 1;
+                if (isBoat) {
+                     return {
+                        id: nextEnemyId++, type, isBoat, isUpgraded, x, y,
+                        bodyWidth: 35 * sizeMultiplier, bodyHeight: 50 * sizeMultiplier,
+                        turretSize: 18 * sizeMultiplier, cannonWidth: 7 * sizeMultiplier, cannonHeight: 24 * sizeMultiplier,
+                        color: isUpgraded ? '#6E2C00' : '#8B4513',
+                        turretColor: isUpgraded ? '#36454F' : '#696969',
+                        angle: (Math.random() - 0.5) * 0.1,
+                        turretAngle: 0, lastFiredTime: Date.now() + Math.random() * 3000, destroyed: false,
+                        health: isUpgraded ? 10 : 1
+                    };
+                } else {
+                    return {
+                        id: nextEnemyId++, type, isBoat, isUpgraded, x, y,
+                        bodyWidth: 30 * sizeMultiplier, bodyHeight: 42 * sizeMultiplier,
+                        turretSize: 18 * sizeMultiplier, cannonWidth: 7 * sizeMultiplier, cannonHeight: 24 * sizeMultiplier,
+                        color: isUpgraded ? '#DCDCDC' : '#F5F5DC',
+                        turretColor: isUpgraded ? '#808080' : '#C1A77C',
+                        angle: Math.random() * Math.PI * 2, turretAngle: 0,
+                        lastFiredTime: Date.now() + Math.random() * 3000, destroyed: false,
+                        health: isUpgraded ? 10 : 1
+                    };
+                }
+            } else if (type === 'tree') {
+                const leafOffsets = [];
+                for (let i = 0; i < Math.floor(Math.random() * 3) + 4; i++) {
+                    leafOffsets.push({ x: (Math.random() - 0.5) * 30, y: (Math.random() - 0.5) * 30, radius: Math.random() * 10 + 10 });
+                }
+                return { type, x, y, leafOffsets };
+            } else if (type === 'rock') {
+                const vertices = [];
+                const numVertices = Math.floor(Math.random() * 4) + 5; // Fixed: Generate vertices
+                const size = Math.random() * 20 + 15;
+                for (let i = 0; i < numVertices; i++) {
+                    const angle = (i / numVertices) * Math.PI * 2;
+                    const radius = size * (Math.random() * 0.4 + 0.8);
+                    vertices.push({ x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+                }
+                return { type, x, y, vertices, size }; // Return vertices and size
+            }
+            return null;
+        }
+       
+        function initializeBackground() {
+            while (backgroundElements.length < NUM_BACKGROUND_ELEMENTS) {
+                const y = Math.random() * canvas.height - canvas.height / 2;
+                const newEl = createBackgroundElement(y);
+                if (newEl) backgroundElements.push(newEl);
+            }
+        }
+
+        function initializeStartScreen() {
+            if (bgCanvas.width === 0 || bgCanvas.height === 0) return;
+           
+            // High-quality textured background (Original style)
+            const grad = bgCtx.createLinearGradient(0, 0, 0, bgCanvas.height);
+            grad.addColorStop(0, '#1A252F');
+            grad.addColorStop(1, '#2C3E50');
+            bgCtx.fillStyle = grad;
+            bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+           
+            // Metal Plates (Original Style)
+            metalPlates = [];
+            for (let i = 0; i < 30; i++) {
+                const x = Math.random() * bgCanvas.width;
+                const y = Math.random() * bgCanvas.height;
+                const width = Math.random() * 200 + 150;
+                const height = Math.random() * 100 + 80;
+                const angle = (Math.random() - 0.5) * Math.PI;
+                const color1 = `hsl(0, 0%, ${Math.random() * 20 + 40}%)`;
+                const color2 = `hsl(0, 0%, ${Math.random() * 20 + 20}%)`;
+
+                bgCtx.save();
+                bgCtx.translate(x, y);
+                bgCtx.rotate(angle);
+                const pGrad = bgCtx.createLinearGradient(-width/2, 0, width/2, 0);
+                pGrad.addColorStop(0, color1);
+                pGrad.addColorStop(1, color2);
+                bgCtx.fillStyle = pGrad;
+                bgCtx.fillRect(-width/2, -height/2, width, height);
+                bgCtx.strokeStyle = 'black';
+                bgCtx.lineWidth = 2;
+                bgCtx.strokeRect(-width/2, -height/2, width, height);
+               
+                // 리벳
+                bgCtx.fillStyle = '#111';
+                const rivetSize = 3;
+                const margin = 8;
+                bgCtx.beginPath(); bgCtx.arc(-width/2+margin, -height/2+margin, rivetSize, 0, Math.PI*2); bgCtx.fill();
+                bgCtx.beginPath(); bgCtx.arc(width/2-margin, -height/2+margin, rivetSize, 0, Math.PI*2); bgCtx.fill();
+                bgCtx.beginPath(); bgCtx.arc(-width/2+margin, height/2-margin, rivetSize, 0, Math.PI*2); bgCtx.fill();
+                bgCtx.beginPath(); bgCtx.arc(width/2-margin, height/2-margin, rivetSize, 0, Math.PI*2); bgCtx.fill();
+               
+                bgCtx.restore();
+            }
+        }
+
+        function spawnBoss() {
+            const width = canvas.width * 0.6;
+            const height = width * 0.7;
+            boss = {
+                id: 'boss',
+                x: 0,
+                y: -canvas.height / 2 - height,
+                width: width,
+                height: height,
+                speed: 1.5,
+                maxHealth: 750,
+                health: 750,
+                color: '#F5F5DC', // 일반 탱크 색 (베이지)
+                detailColor1: '#8B4513',
+                detailColor2: '#696969',
+                angle: Math.PI,
+                lastFiredTime: Date.now(),
+                lastMissileFiredTime: Date.now(),
+                destroyed: false,
+                state: 'entering',
+                deathTime: 0,
+                lateralPhase: Math.random() * Math.PI * 2
+            };
+        }
+       
+        // --- UPDATE & AI LOGIC ---
+        function updateAll() {
+            if (bossWarning.pendingSpawn && Date.now() - bossWarning.spawnStartTime > 3000) {
+                spawnBoss();
+                bossWarning.pendingSpawn = false;
+            }
+
+            if (river === null && Math.random() < 0.001) createScrollingRiver();
+            if (backgroundElements.length < NUM_BACKGROUND_ELEMENTS) {
+                const y = -canvas.height / 2 - (Math.random() * canvas.height);
+                const newEl = createBackgroundElement(y);
+                if (newEl) backgroundElements.push(newEl);
+            }
+            if (player.isPoweredUp && Date.now() > player.powerUpEndTime) player.isPoweredUp = false;
+            if (player.isShielded && Date.now() > player.shieldEndTime) player.isShielded = false;
+           
+            updateRiver();
+            if (boss) updateBoss();
+            updateBackgroundElements();
+            updatePowerUps();
+            updateBullets(bullets, true);
+            updateBullets(enemyBullets, false);
+            updateBullets(bossMissiles, false);
+            updateMissiles();
+            updateExplosions();
+            updateDifficulty();
+            updatePlayerPosition();
+            handleCollisions();
+        }
+
+        function updateRiver() {
+            if (!river) return;
+            river.y += backgroundSpeed;
+            if (river.y > canvas.height / 2 + river.sandBankWidth) river = null;
+        }
+
+        function updateBackgroundElements() {
+            const now = Date.now();
+            for (let i = backgroundElements.length - 1; i >= 0; i--) {
+                const el = backgroundElements[i];
+               
+                if (el.type === 'enemyFighter') {
+                    if (!el.destroyed) {
+                        if (!el.isEscaping && now - el.spawnTime > el.lifeSpan) el.isEscaping = true;
+                       
+                        if (el.isApproachingCenter) {
+                            const distToCenter = Math.hypot(el.x, el.y);
+                            if (distToCenter <= 40) {
+                                el.isApproachingCenter = false;
+                            } else {
+                                const approachSpeed = el.speed * 4;
+                                const dirX = -el.x / distToCenter;
+                                const dirY = -el.y / distToCenter;
+                               
+                                el.x += dirX * approachSpeed;
+                                el.y += dirY * approachSpeed;
+                                el.angle = Math.atan2(dirY, dirX) + Math.PI / 2;
+                            }
+                        } else if (el.isEscaping) {
+                            el.angle = 0;
+                            el.y -= 10;    
+                        } else {
+                            el.angle = Math.atan2(player.y - el.y, player.x - el.x) + Math.PI / 2;
+                            const moveX = Math.sin(el.angle - Math.PI / 2) * el.speed;
+                            const moveY = Math.cos(el.angle - Math.PI / 2) * el.speed;
+                            const lateralMoveX = Math.cos(now / 400 + el.lateralPhase) * 2;
+                            const centerPullX = -el.x * 0.005;
+                            el.x += moveX + lateralMoveX + centerPullX;
+                            el.y += moveY;
+
+                            if (now - el.lastFiredTime > 2500) {
+                                el.lastFiredTime = now;
+                                fireEnemyBullet(el);
+                            }
+                        }
+                    } else {
+                        el.y += backgroundSpeed;
+                    }
+                } else if (el.type === 'tank') {
+                    el.y += backgroundSpeed;
+                    if (!el.destroyed) {
+                        el.turretAngle = Math.atan2(player.y - el.y, player.x - el.x) + Math.PI / 2;
+                        if (now - el.lastFiredTime > 3000) {
+                            el.lastFiredTime = now;
+                            fireEnemyBullet(el);
+                        }
+                    }
+                } else {
+                    el.y += backgroundSpeed;
+                }
+               
+                if (el.y > canvas.height / 2 + 50 || el.y < -canvas.height / 2 - 50) {
+                    const newY = -canvas.height / 2 - (Math.random() * canvas.height + 50);
+                    const newEl = createBackgroundElement(newY);
+                    if (newEl) backgroundElements[i] = newEl;
+                    else backgroundElements.splice(i, 1);
+                }
+            }
+        }
+       
+        function fireEnemyBullet(el) {
+            const fireAngle = (el.type === 'enemyFighter') ? el.angle : el.turretAngle;
+            if (el.isUpgraded) {
+                const spread = 0.25;
+                [-spread, 0, spread].forEach(angleOffset => {
+                    enemyBullets.push({ x: el.x, y: el.y, angle: fireAngle + angleOffset, width: 6, height: 18 });
+                });
+            } else {
+                enemyBullets.push({ x: el.x, y: el.y, angle: fireAngle, width: 6, height: 18 });
+            }
+        }
+       
+        function updateBullets(bulletArray, isPlayer) {
+            for (let i = bulletArray.length - 1; i >= 0; i--) {
+                const bullet = bulletArray[i];
+                if (isPlayer) {
+                    bullet.x += bullet.dx;
+                    bullet.y += bullet.dy;
+                } else {
+                    if (bullet.isMissile) {
+                         bullet.x += bullet.dx;
+                         bullet.y += bullet.dy;
+                    } else {
+                        bullet.x += Math.sin(bullet.angle) * enemyBulletSpeed;
+                        bullet.y -= Math.cos(bullet.angle) * enemyBulletSpeed;
+                    }
+                }
+
+                if (bullet.y < -canvas.height / 2 - 50 || bullet.y > canvas.height / 2 + 50 || bullet.x < -canvas.width/2 - 50 || bullet.x > canvas.width/2 + 50) {
+                    bulletArray.splice(i, 1);
+                }
+            }
+        }
+       
+        function updateMissiles() {
+            for (let i = missiles.length - 1; i >= 0; i--) {
+                const m = missiles[i];
+                m.y -= m.speed;
+                m.speed *= missileDeceleration;
+                m.width = m.initialWidth * Math.max(m.speed / missileSpeed, 0.1);
+                m.height = m.initialHeight * Math.max(m.speed / missileSpeed, 0.1);
+                if (Date.now() - m.firedTime > 1000) {
+                    explosions.push({ x: m.x, y: m.y, radius: 0, maxRadius: 100, creationTime: Date.now(), damagedEnemies: new Set() });
+                    missiles.splice(i, 1);
+                }
+            }
+        }
+
+        function updatePowerUps() {
+             for (let i = powerUps.length - 1; i >= 0; i--) {
+                const p = powerUps[i];
+                p.y += backgroundSpeed;
+                if (p.y > canvas.height / 2 + p.size) powerUps.splice(i, 1);
+            }
+        }
+
+        function updateExplosions() {
+             for (let i = explosions.length - 1; i >= 0; i--) {
+                const ex = explosions[i];
+                ex.y += backgroundSpeed;
+                if (Date.now() - ex.creationTime > 700) explosions.splice(i, 1);
+            }
+        }
+
+        function updateDifficulty() {
+            if (!gameStartTime) return;
+            const elapsed = Date.now() - gameStartTime;
+            const progress = Math.min(elapsed / timeToMaxSpawnRate, 1.0);
+            if (initialTankSpawnRate !== undefined && maxTankSpawnRate !== undefined) {
+                currentTankSpawnRate = initialTankSpawnRate + (maxTankSpawnRate - initialTankSpawnRate) * progress;
+            }
+        }
+       
+        function shoot() {
+            const now = Date.now();
+            if (now - lastShotTime < shootCooldown) return;
+            lastShotTime = now;
+           
+            if (player.isPoweredUp && !isBossSequenceActive) {
+                const numBullets = 7;
+                const spreadAngle = Math.PI / 4;
+                for (let i = 0; i < numBullets; i++) {
+                    const angle = (i / (numBullets - 1) - 0.5) * spreadAngle;
+                    const dx = Math.sin(angle) * bulletSpeed;
+                    const dy = -Math.cos(angle) * bulletSpeed;
+                    bullets.push({x: player.x, y: player.y - player.height/2, dx, dy, width: 4, height: 12 }); // Center fire
+                }
+            } else {
+                const wingWidth = player.width * 1.5, wingRearY = -12, wingFrontY = -28;
+                [15, 30].forEach(dist => {
+                    const relY = wingRearY + (dist / (wingWidth*1.5)) * (wingFrontY - wingRearY);
+                    bullets.push({ x: player.x - dist, y: player.y + relY, dx: 0, dy: -bulletSpeed, width: 4, height: 16 });
+                    bullets.push({ x: player.x + dist, y: player.y + relY, dx: 0, dy: -bulletSpeed, width: 4, height: 16 });
+                });
+            }
+        }
+       
+        function fireMissile() {
+            const now = Date.now();
+            if (now - lastMissileTime < missileCooldown) return;
+            lastMissileTime = now;
+            const w = 14, h = 30;
+            missiles.push({
+                x: player.x, y: player.y - player.height, width: w, height: h,
+                initialWidth: w, initialHeight: h, speed: missileSpeed, firedTime: now
+            });
+        }
+
+        function updateBoss() {
+            if (!boss) return;
+            const now = Date.now();
+
+            if (boss.state === 'entering') {
+                boss.y += boss.speed;
+                if (boss.y >= -canvas.height / 2 + boss.height / 2 + 50) {
+                    boss.state = 'fighting';
+                }
+            } else if (boss.state === 'fighting') {
+                boss.x = Math.sin(now / 2000 + boss.lateralPhase) * (canvas.width / 2 - boss.width / 2);
+
+                // 산탄 공격
+                if (now - boss.lastFiredTime > 2000) {
+                    boss.lastFiredTime = now;
+                    const spread = Math.PI / 2; // 부채꼴 각도
+                    const numBullets = 9;
+                    for (let i = 0; i < numBullets; i++) {
+                        const angleOffset = (i / (numBullets-1) - 0.5) * spread;
+                        const fireX = boss.x;
+                        const fireY = boss.y + boss.height/2;
+                        enemyBullets.push({ x: fireX, y: fireY, angle: Math.PI + angleOffset, width: 4, height: 16 });
+                    }
+                }
+
+                // 미사일 공격 (느리게)
+                if (now - boss.lastMissileFiredTime > 5000) {
+                    boss.lastMissileFiredTime = now;
+                    if (Math.random() < 0.7) {
+                        const missileX = boss.x;
+                        const missileY = boss.y - boss.height * 0.2;
+                        const angleToPlayer = Math.atan2(player.y - missileY, player.x - missileX);
+                       
+                        bossMissiles.push({
+                            x: missileX,
+                            y: missileY,
+                            dx: Math.cos(angleToPlayer) * 4, // 속도 감소 (5->4)
+                            dy: Math.sin(angleToPlayer) * 4,
+                            width: 10, height: 20,
+                            angle: angleToPlayer + Math.PI/2,
+                            isMissile: true
+                        });
+                    }
+                }
+            } else if (boss.state === 'dying') {
+                const elapsed = now - boss.deathTime;
+                if (elapsed < 5000) {
+                    if (Math.random() < 0.5) {
+                         explosions.push({
+                            x: boss.x + (Math.random() - 0.5) * boss.width,
+                            y: boss.y + (Math.random() - 0.5) * boss.height,
+                            radius: 0, maxRadius: 80, creationTime: Date.now(), damagedEnemies: new Set()
+                        });
+                    }
+                } else {
+                    explosions.push({
+                        x: boss.x, y: boss.y,
+                        radius: 0, maxRadius: canvas.width, creationTime: Date.now(), damagedEnemies: new Set()
+                    });
+                    score += 5000;
+                    boss = null;
+                    isBossSequenceActive = false;
+                    bossDestroyedMessage.active = true;
+                    bossDestroyedMessage.startTime = Date.now();
+                    bossDefeated = true;
+                }
+            }
+        }
+
+        function handleCollisions() {
+            // Player Bullets vs Enemies
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                let bulletRemoved = false;
+                for (let j = backgroundElements.length - 1; j >= 0; j--) {
+                    const el = backgroundElements[j];
+                    if ((el.type === 'tank' || el.type === 'enemyFighter') && !el.destroyed && Math.hypot(bullet.x - el.x, bullet.y - el.y) < Math.max(el.bodyWidth, el.bodyHeight) / 2) {
+                        el.health--;
+                        if (el.health <= 0) {
+                            el.destroyed = true;
+                            score += el.isUpgraded ? 1000 : 500;
+                            if (score >= 30000 && !bossWarning.shown) {
+                                bossWarning.active = true;
+                                bossWarning.shown = true;
+                                bossWarning.startTime = Date.now();
+                                isBossSequenceActive = true;
+                            }
+                            explosions.push({ x: el.x, y: el.y, radius: 0, maxRadius: 50, creationTime: Date.now(), damagedEnemies: new Set() });
+                           
+                            // 아이템 드랍 로직 (2.5% 확률)
+                            if (!isBossSequenceActive) {
+                                const dropRoll = Math.random();
+                                if (dropRoll < 0.025) {
+                                    powerUps.push({x: el.x, y: el.y, size: 25, type: 'spreadShot'});
+                                } else if (dropRoll < 0.05 && player.health < player.maxHealth) {
+                                    powerUps.push({x: el.x, y: el.y, size: 25, type: 'heal'});
+                                } else if (dropRoll < 0.075) {
+                                    powerUps.push({x: el.x, y: el.y, size: 25, type: 'shield'});
+                                }
+                            }
+                        }
+                        bullets.splice(i, 1);
+                        bulletRemoved = true;
+                        break;
+                    }
+                }
+                if (bulletRemoved || !bullets[i]) continue;
+
+                if (boss && boss.state === 'fighting') {
+                    if(bullet.x > boss.x - boss.width/2 && bullet.x < boss.x + boss.width/2 &&
+                       bullet.y > boss.y - boss.height/2 && bullet.y < boss.y + boss.height/2) {
+                        boss.health--;
+                        if (boss.health <= 0) {
+                            boss.state = 'dying';
+                            boss.deathTime = Date.now();
+                        }
+                        bullets.splice(i, 1);
+                    }
+                }
+            }
+
+            // Missile Explosions vs Enemies
+            explosions.forEach(ex => {
+                if (ex.maxRadius < 100) return;
+                backgroundElements.forEach(el => {
+                    if ((el.type === 'tank' || el.type === 'enemyFighter') && !el.destroyed && !ex.damagedEnemies.has(el.id)) {
+                        if (Math.hypot(ex.x - el.x, ex.y - el.y) < ex.radius) {
+                            el.health -= 20;
+                            ex.damagedEnemies.add(el.id);
+                            if (el.health <= 0) {
+                                el.destroyed = true;
+                                score += el.isUpgraded ? 1000 : 500;
+                                if (score >= 30000 && !bossWarning.shown) {
+                                    bossWarning.active = true;
+                                    bossWarning.shown = true;
+                                    bossWarning.startTime = Date.now();
+                                    isBossSequenceActive = true;
+                                }
+                                explosions.push({ x: el.x, y: el.y, radius: 0, maxRadius: 50, creationTime: Date.now(), damagedEnemies: new Set() });
+                                if (!isBossSequenceActive && Math.random() < 0.075) {
+                                    const dropRoll = Math.random();
+                                    if (dropRoll < 0.025) { powerUps.push({x: el.x, y: el.y, size: 25, type: 'spreadShot'}); }
+                                    else if (dropRoll < 0.05 && player.health < player.maxHealth) { powerUps.push({x: el.x, y: el.y, size: 25, type: 'heal'}); }
+                                    else if (dropRoll < 0.075) { powerUps.push({x: el.x, y: el.y, size: 25, type: 'shield'}); }
+                                }
                             }
                         }
                     }
-                    maxTries--;
+                });
+               
+                if (boss && boss.state === 'fighting' && !ex.damagedEnemies.has(boss.id)) {
+                    if (Math.hypot(ex.x - boss.x, ex.y - boss.y) < ex.radius + boss.width / 2) {
+                        boss.health -= 20;
+                        ex.damagedEnemies.add(boss.id);
+                        if (boss.health <= 0) {
+                            boss.state = 'dying';
+                            boss.deathTime = Date.now();
+                        }
+                    }
                 }
-
-                return { 
-                    type: 'tank', 
-                    x, y, 
-                    bodyWidth: 30,
-                    bodyHeight: 42,
-                    turretSize: 18,
-                    cannonWidth: 7,
-                    cannonHeight: 24,
-                    color: '#F5F5DC',
-                    turretColor: '#C1A77C',
-                    angle: Math.random() * Math.PI * 2,
-                    destroyed: false // 파괴 상태 추가
-                };
-            } else {
-                // 나무와 바위는 기존 방식대로 생성
-                x = Math.random() * canvas.width - canvas.width / 2;
-
-                if (type === 'tree') {
-                    const leafOffsets = [];
-                    const numLeaves = Math.floor(Math.random() * 3) + 4;
-                     for (let i = 0; i < numLeaves; i++) {
-                        leafOffsets.push({
-                            x: (Math.random() - 0.5) * 30,
-                            y: (Math.random() - 0.5) * 30,
-                            radius: Math.random() * 10 + 10
-                        });
+            });
+           
+            // Enemy Bullets vs Player (일반 총알)
+            for (let i = enemyBullets.length - 1; i >= 0; i--) {
+                const bullet = enemyBullets[i];
+                if (Math.hypot(bullet.x - player.x, bullet.y - player.y) < player.width / 2) {
+                    if (player.isShielded) {
+                        enemyBullets.splice(i, 1);
+                        continue;
                     }
-                    return { type: 'tree', x, y, leafOffsets };
-                } else { // rock
-                    const vertices = [];
-                    const numVertices = Math.floor(Math.random() * 4) + 5; // 5-8개의 꼭짓점
-                    const size = Math.random() * 20 + 15;
-                    for (let i = 0; i < numVertices; i++) {
-                        const angle = (i / numVertices) * Math.PI * 2;
-                        const radius = size * (Math.random() * 0.4 + 0.8);
-                        vertices.push({
-                            x: Math.cos(angle) * radius,
-                            y: Math.sin(angle) * radius
-                        });
+                    enemyBullets.splice(i, 1);
+                    player.health--;
+                    if (player.health <= 0) {
+                        gameState = 'gameOver';
+                        explosions.push({ x: player.x, y: player.y, radius: 0, maxRadius: 120, creationTime: Date.now(), damagedEnemies: new Set() });
                     }
-                    return { type: 'rock', x, y, vertices };
+                }
+            }
+
+             // Boss Missiles vs Player (추가)
+            for (let i = bossMissiles.length - 1; i >= 0; i--) {
+                const bullet = bossMissiles[i];
+                if (Math.hypot(bullet.x - player.x, bullet.y - player.y) < player.width / 2) {
+                    if (player.isShielded) {
+                        bossMissiles.splice(i, 1);
+                        continue;
+                    }
+                    bossMissiles.splice(i, 1);
+                    player.health -= 1; // 미사일도 체력 1 감소 (일단 동일하게)
+                    if (player.health <= 0) {
+                        gameState = 'gameOver';
+                        explosions.push({ x: player.x, y: player.y, radius: 0, maxRadius: 120, creationTime: Date.now(), damagedEnemies: new Set() });
+                    }
+                }
+            }
+
+            // Player vs Power-ups
+            for(let i = powerUps.length - 1; i >= 0; i--) {
+                const p = powerUps[i];
+                if (Math.hypot(p.x - player.x, p.y - player.y) < (p.size + player.width) / 2) {
+                    if (p.type === 'spreadShot') {
+                        player.isPoweredUp = true;
+                        player.powerUpEndTime = Date.now() + 30000;
+                        score += 500;
+                    } else if (p.type === 'heal') {
+                        if (player.health < player.maxHealth) player.health++;
+                        score += 500;
+                    } else if (p.type === 'shield') {
+                        player.isShielded = true;
+                        player.shieldEndTime = Date.now() + 10000;
+                        score += 500;
+                    }
+                    powerUps.splice(i, 1);
                 }
             }
         }
-        
-        // 배경 초기화
-        function initializeBackground() {
-            // 생성 빈도 감소
-            for (let i = 0; i < 20; i++) {
-                const y = Math.random() * canvas.height - canvas.height / 2;
-                backgroundElements.push(createBackgroundElement(y));
-            }
-        }
-        
-        // 배경 그리기 및 업데이트 함수 (적 그리기 추가)
-        function handleBackground() {
-            for (let i = 0; i < backgroundElements.length; i++) {
-                let el = backgroundElements[i];
-                el.y += backgroundSpeed;
 
+        function updatePlayerPosition() {
+            const wingSpan = player.width * 3;
+            const leftB = -canvas.width / 2 + wingSpan / 2;
+            const rightB = canvas.width / 2 - wingSpan / 2;
+            const topB = -canvas.height / 2 + player.height;
+            const bottomB = canvas.height / 2;
+
+            if (keys['KeyW'] && player.y > topB) player.y -= player.speed;
+            if (keys['KeyS'] && player.y < bottomB) player.y += player.speed;
+            if (keys['KeyA'] && player.x > leftB) player.x -= player.speed;
+            if (keys['KeyD'] && player.x < rightB) player.x += player.speed;
+           
+            if (keys['Space']) shoot();
+            if (keys['KeyE']) fireMissile();
+        }
+
+        // --- DRAWING FUNCTIONS (Restored Original Style) ---
+        function drawAll() {
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+           
+            // 배경 (초록색 평야)
+            ctx.fillStyle = 'green';
+            ctx.fillRect(-canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+           
+            drawRiver();
+            drawBackgroundElements();
+            drawPowerUps();
+           
+            if (boss) drawBoss();
+            if (gameState !== 'gameOver') drawPlayer();
+           
+            drawBullets(bullets, true);
+            drawBullets(enemyBullets, false);
+            drawBullets(bossMissiles, false); // 보스 미사일 그리기 (재활용)
+            drawMissiles();
+            drawExplosions();
+
+            ctx.restore();
+
+            if (gameState !== 'gameOver') {
+                drawHealthBar();
+                drawPauseButton();
+                drawScore();
+                if(boss) drawBossHealthBar();
+                if(bossDefeated) drawBossDefeatedIcon();
+            }
+            if (bossWarning.active) drawBossWarning();
+            if (bossDestroyedMessage.active) drawBossDestroyedMessage();
+            if (gameState === 'paused') drawPauseScreen();
+            else if (gameState === 'gameOver') drawGameOverScreen();
+        }
+
+        function drawStartScreen() {
+            // 배경 (철판)
+            if (bgCanvas.width > 0 && bgCanvas.height > 0) {
+                ctx.drawImage(bgCanvas, 0, 0);
+            }
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+           
+            const titleFont = "bold 100px 'Impact', 'Arial Black', sans-serif";
+            ctx.font = titleFont;
+            ctx.fillStyle = 'black';
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 5;
+            ctx.strokeText("REBIUS", canvas.width / 2, canvas.height / 2 - 100);
+            ctx.fillText("REBIUS", canvas.width / 2, canvas.height / 2 - 100);
+
+            const buttonFont = "bold 40px 'Impact', 'Arial Black', sans-serif";
+            ctx.font = buttonFont;
+            ctx.lineWidth = 3;
+
+            [easyButton, regularButton, hardButton].forEach((button, i) => {
+                const text = ['EASY', 'REGULAR', 'HARD'][i];
+                drawRoundedRect(button.x, button.y, button.width, button.height, 10, '#ccc', '#222');
+                ctx.strokeText(text, button.x + button.width / 2, button.y + button.height / 2 + 2);
+                ctx.fillText(text, button.x + button.width / 2, button.y + button.height / 2 + 2);
+            });
+        }
+
+        function drawRiver() {
+            if (!river) return;
+            const getRiverCenterX = (currentY) => river.baseX + Math.sin((currentY - river.y) * river.frequency + river.phase) * river.amplitude;
+            const startY = Math.max(river.y, -canvas.height / 2);
+            const endY = Math.min(river.y + river.height, canvas.height / 2);
+            const step = 20; // 최적화
+
+            ctx.lineWidth = river.width + river.sandBankWidth * 2;
+            ctx.strokeStyle = '#D2B48C'; // 모래색
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(getRiverCenterX(startY), startY);
+            for (let y = startY; y <= endY; y += step) ctx.lineTo(getRiverCenterX(y), y);
+            ctx.stroke();
+
+            ctx.lineWidth = river.width;
+            ctx.strokeStyle = '#4682B4'; // 강물색
+            ctx.beginPath();
+            ctx.moveTo(getRiverCenterX(startY), startY);
+            for (let y = startY; y <= endY; y += step) ctx.lineTo(getRiverCenterX(y), y);
+            ctx.stroke();
+           
+            ctx.lineCap = 'butt';
+        }
+
+        function drawBackgroundElements() {
+            backgroundElements.forEach(el => {
                 ctx.save();
                 ctx.translate(el.x, el.y);
-                
+               
                 if (el.type === 'tree') {
-                    ctx.fillStyle = '#90ee90'; // 연두색
+                    // 나무 (원래 스타일)
+                    ctx.fillStyle = '#90ee90';
                     el.leafOffsets.forEach(offset => {
                          ctx.beginPath();
                          ctx.arc(offset.x, offset.y, offset.radius, 0, Math.PI * 2);
                          ctx.fill();
                     });
                 } else if (el.type === 'rock') {
-                    ctx.fillStyle = '#808080'; // 회색
+                    // 바위 (원래 스타일)
+                    ctx.fillStyle = '#808080';
                     ctx.beginPath();
                     ctx.moveTo(el.vertices[0].x, el.vertices[0].y);
-                    for (let j = 1; j < el.vertices.length; j++) {
-                        ctx.lineTo(el.vertices[j].x, el.vertices[j].y);
-                    }
+                    el.vertices.slice(1).forEach(v => ctx.lineTo(v.x, v.y));
                     ctx.closePath();
                     ctx.fill();
-                } else if (el.type === 'tank') {
-                    ctx.rotate(el.angle); // 탱크 회전
-                    // 몸체 그리기 (항상)
-                    ctx.fillStyle = el.color;
-                    ctx.fillRect(-el.bodyWidth / 2, -el.bodyHeight / 2, el.bodyWidth, el.bodyHeight);
-                    
-                    if (!el.destroyed) {
-                        // 파괴되지 않았을 때: 포탑과 포신 그리기
-                        ctx.fillStyle = el.turretColor;
-                        ctx.fillRect(-el.turretSize / 2, -el.turretSize / 2, el.turretSize, el.turretSize);
-                        ctx.fillRect(-el.cannonWidth / 2, -el.turretSize / 2 - el.cannonHeight, el.cannonWidth, el.cannonHeight);
-                    } else {
-                        // 파괴되었을 때: 몸체 위에 파손 흔적 그리기
+                } else if (el.type === 'tank' || el.type === 'enemyFighter') {
+                    ctx.rotate(el.angle);
+                    if (el.destroyed) {
+                        // 파괴된 모습 (검은 흔적)
                         ctx.fillStyle = '#333';
+                        const size = (el.type === 'tank') ? el.turretSize : 18;
                         ctx.beginPath();
-                        ctx.moveTo(0, 0);
-                        ctx.lineTo(-el.turretSize, -el.turretSize / 3);
-                        ctx.lineTo(-el.turretSize / 2, -el.turretSize);
-                        ctx.lineTo(el.turretSize / 2, -el.turretSize);
-                        ctx.lineTo(el.turretSize, 0);
-                        ctx.lineTo(el.turretSize / 3, el.turretSize / 2);
+                        ctx.moveTo(0, 0); ctx.lineTo(-size, -size / 3);
+                        ctx.lineTo(-size / 2, -size); ctx.lineTo(size / 2, -size);
+                        ctx.lineTo(size, 0); ctx.lineTo(size / 3, size / 2);
                         ctx.closePath();
                         ctx.fill();
+                    } else {
+                        if (el.type === 'enemyFighter') drawEnemyFighterBody(el);
+                        else drawTankBody(el);
                     }
                 }
-                
                 ctx.restore();
-
-                // 화면 아래로 벗어나면, 이 요소를 새로운 요소로 교체합니다.
-                if (el.y > canvas.height / 2 + 50) {
-                    const newY = -canvas.height / 2 - (Math.random() * canvas.height + 50);
-                    backgroundElements[i] = createBackgroundElement(newY);
-                }
+            });
+        }
+       
+        function drawTankBody(el) {
+            // 원래 탱크/보트 그리기 로직
+            if (el.isBoat) {
+                ctx.fillStyle = el.color;
+                const w = el.bodyWidth / 2, h = el.bodyHeight / 2;
+                ctx.beginPath();
+                ctx.moveTo(0, h); ctx.lineTo(-w, h * 0.8); ctx.lineTo(-w, -h * 0.6);
+                ctx.lineTo(0, -h); ctx.lineTo(w, -h * 0.6); ctx.lineTo(w, h * 0.8);
+                ctx.closePath();
+                ctx.fill();
+            } else {
+                ctx.fillStyle = el.color;
+                ctx.fillRect(-el.bodyWidth / 2, -el.bodyHeight / 2, el.bodyWidth, el.bodyHeight);
             }
+            ctx.save();
+            ctx.rotate(-el.angle);
+            ctx.rotate(el.turretAngle);
+            ctx.fillStyle = el.turretColor;
+            ctx.fillRect(-el.turretSize / 2, -el.turretSize / 2, el.turretSize, el.turretSize);
+            ctx.fillRect(-el.cannonWidth / 2, -el.turretSize / 2 - el.cannonHeight, el.cannonWidth, el.cannonHeight);
+            if (el.isUpgraded) {
+                ctx.fillStyle = 'yellow';
+                ctx.fillRect(-el.cannonWidth/4, -el.turretSize/2 - el.cannonHeight, el.cannonWidth/2, el.cannonHeight/2);
+            }
+            ctx.restore();
         }
 
+        function drawBullets(bulletArray, isPlayer) {
+            bulletArray.forEach(bullet => {
+                ctx.save();
+                ctx.translate(bullet.x, bullet.y);
+                ctx.rotate(isPlayer ? Math.atan2(bullet.dx, -bullet.dy) : bullet.angle);
+               
+                // 보스 미사일은 조금 다르게 그림
+                if (bullet.isMissile) {
+                    ctx.fillStyle = 'black';
+                    ctx.fillRect(-bullet.width/2, -bullet.height/2, bullet.width, bullet.height);
+                    // 빨간 팁
+                    ctx.fillStyle = 'red';
+                    ctx.fillRect(-bullet.width/2, bullet.height/2 - 5, bullet.width, 5);
+                } else {
+                    const grad = ctx.createLinearGradient(-bullet.width/2, 0, bullet.width/2, 0);
+                    if (isPlayer) {
+                        grad.addColorStop(0, 'orange'); grad.addColorStop(0.5, 'yellow'); grad.addColorStop(1, 'orange');
+                    } else {
+                        grad.addColorStop(0, 'red'); grad.addColorStop(0.5, 'orange'); grad.addColorStop(1, 'red');
+                    }
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(-bullet.width / 2, -bullet.height / 2, bullet.width, bullet.height);
+                }
+                ctx.restore();
+            });
+        }
+       
+        function drawMissiles() {
+            missiles.forEach(m => {
+                ctx.fillStyle = 'lightgrey';
+                ctx.fillRect(m.x - m.width / 2, m.y - m.height, m.width, m.height);
+                ctx.fillStyle = 'red';
+                ctx.fillRect(m.x - m.width / 4, m.y - m.height - 3, m.width / 2, 3);
+            });
+        }
 
+        function drawPowerUps() {
+            powerUps.forEach(p => {
+                let color, text;
+                if (p.type === 'spreadShot') { color = 'red'; text = 'S'; }
+                else if (p.type === 'heal') { color = 'green'; text = 'H'; }
+                else if (p.type === 'shield') { color = 'blue'; text = 'D'; }
+
+                drawRoundedRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size, 5, color, null);
+                ctx.font = '20px Arial';
+                ctx.fillStyle = 'white';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(text, p.x, p.y);
+            });
+        }
+       
+        function drawExplosions() {
+             explosions.forEach(ex => {
+                const duration = 700, elapsed = Date.now() - ex.creationTime;
+                if (elapsed > duration) return;
+                const progress = elapsed / duration;
+                ex.radius = ex.maxRadius * (1 - Math.pow(1 - progress, 3));
+                const alpha = 1 - progress;
+               
+                // 최적화된 폭발 (그라데이션 대신 단색+알파)
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = `rgb(255, ${Math.floor(255 * (1-progress))}, 0)`;
+                ctx.beginPath();
+                ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            });
+        }
+       
         function drawPlayer() {
             ctx.save();
             ctx.translate(player.x, player.y);
 
-            // 몸통 앞부분 (회색)
+            // Shield Aura
+            if (player.isShielded) {
+                const shieldRadius = player.width * 1.5;
+                const pulse = Math.abs(Math.sin(Date.now() / 200)) * 0.2 + 0.8;
+                ctx.fillStyle = `rgba(52, 152, 219, ${0.3 * pulse})`;
+                ctx.beginPath();
+                ctx.arc(0, 0, shieldRadius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+           
+            // 원래 플레이어 디자인 복구
             ctx.fillStyle = '#a9a9a9';
             ctx.beginPath();
             ctx.moveTo(0, -player.height);
@@ -243,19 +1194,11 @@
             ctx.lineTo(-player.width / 4, -player.height + 10);
             ctx.closePath();
             ctx.fill();
-
-            // 몸통 (원통)
             ctx.fillStyle = player.color;
             ctx.fillRect(-player.width / 4, -player.height + 10, player.width / 2, player.height - 5);
-            ctx.fillStyle = '#c0c0c0'; // 회색 하이라이트
+            ctx.fillStyle = '#c0c0c0';
             ctx.fillRect(-player.width / 8, -player.height + 10, player.width / 4, player.height - 5);
-
-            // 날개 크기 및 위치 조정
-            const wingWidth = player.width; // 날개 너비 줄임
-            const wingRearY = -12; // 날개 뒤쪽 y 위치
-            const wingFrontY = -28; // 날개 앞쪽 y 위치
-
-            // 왼쪽 날개
+            const wingWidth = player.width, wingRearY = -12, wingFrontY = -28;
             ctx.fillStyle = '#a9a9a9';
             ctx.beginPath();
             ctx.moveTo(-player.width / 4, wingRearY);
@@ -263,266 +1206,406 @@
             ctx.lineTo(-player.width / 4, wingFrontY);
             ctx.closePath();
             ctx.fill();
-
-            // 오른쪽 날개
             ctx.beginPath();
             ctx.moveTo(player.width / 4, wingRearY);
             ctx.lineTo(player.width / 4 + wingWidth, wingRearY);
             ctx.lineTo(player.width / 4, wingFrontY);
             ctx.closePath();
             ctx.fill();
-
-            // 날개 아래 돌출부 (총구)
-            const protrusionWidth = 5;
-            const protrusionHeight = 10;
-            
-            function drawProtrusion(wingX, wingTipY) {
+            const protrusionWidth = 5, protrusionHeight = 10;
+            const drawProtrusion = (wingX, wingTipY) => {
                 ctx.save();
                 ctx.translate(wingX, wingTipY);
-
                 ctx.fillStyle = 'red';
-                // 사각형의 위쪽 중앙이 (wingX, wingTipY)에 오도록 아래로 그립니다.
                 ctx.fillRect(-protrusionWidth / 2, 0, protrusionWidth, protrusionHeight);
-
                 ctx.restore();
-            }
-            
-            // 돌출부 위치 계산 (줄어든 날개 너비에 맞춤)
-            const innerDist = 10;
-            const outerDist = 25;
-
-            // 안쪽 돌출부
-            const innerWingPointY = wingRearY + (innerDist / wingWidth) * (wingFrontY - wingRearY);
-            const innerWingPointX_L = -player.width / 4 - innerDist;
-            const innerWingPointX_R = player.width / 4 + innerDist;
-            drawProtrusion(innerWingPointX_L, innerWingPointY);
-            drawProtrusion(innerWingPointX_R, innerWingPointY);
-
-            // 바깥쪽 돌출부
-            const outerWingPointY = wingRearY + (outerDist / wingWidth) * (wingFrontY - wingRearY);
-            const outerWingPointX_L = -player.width / 4 - outerDist;
-            const outerWingPointX_R = player.width / 4 + outerDist;
-            drawProtrusion(outerWingPointX_L, outerWingPointY);
-            drawProtrusion(outerWingPointX_R, outerWingPointY);
-
-
+            };
+            const innerDist = 10, outerDist = 25;
+            const innerY = wingRearY + (innerDist / wingWidth) * (wingFrontY - wingRearY);
+            drawProtrusion(-player.width / 4 - innerDist, innerY);
+            drawProtrusion(player.width / 4 + innerDist, innerY);
+            const outerY = wingRearY + (outerDist / wingWidth) * (wingFrontY - wingRearY);
+            drawProtrusion(-player.width / 4 - outerDist, outerY);
+            drawProtrusion(player.width / 4 + outerDist, outerY);
             ctx.restore();
         }
-        
-        function shoot() {
-            const now = Date.now();
-            if (now - lastShotTime < shootCooldown) return;
-            lastShotTime = now;
-            
-            // drawPlayer와 동일한 날개 값 사용
-            const wingWidth = player.width;
-            const wingRearY = -12;
-            const wingFrontY = -28;
 
-            const protrusionPositions = [10, 25]; // 안쪽, 바깥쪽 돌출부 거리
+        function drawEnemyFighterBody(el) {
+            // 원래 적 전투기 디자인 복구
+            const p_width = el.bodyWidth;
+            const p_height = el.bodyHeight;
 
-            protrusionPositions.forEach(dist => {
-                // 날개 경사면의 y좌표 계산
-                const relativeY = wingRearY + (dist / wingWidth) * (wingFrontY - wingRearY);
+            ctx.fillStyle = el.detailColor2;
+            ctx.beginPath();
+            ctx.moveTo(0, -p_height);
+            ctx.lineTo(p_width / 4, -p_height + 10);
+            ctx.lineTo(-p_width / 4, -p_height + 10);
+            ctx.closePath();
+            ctx.fill();
 
-                // 왼쪽 총알
-                const bulletX_L = player.x - player.width / 4 - dist;
-                const bulletY_L = player.y + relativeY;
-                bullets.push({ x: bulletX_L, y: bulletY_L, width: 4, height: 15 });
+            ctx.fillStyle = el.color;
+            ctx.fillRect(-p_width / 4, -p_height + 10, p_width / 2, p_height - 5);
+            ctx.fillStyle = el.detailColor1;
+            ctx.fillRect(-p_width / 8, -p_height + 10, p_width / 4, p_height - 5);
 
-                // 오른쪽 총알
-                const bulletX_R = player.x + player.width / 4 + dist;
-                const bulletY_R = player.y + relativeY;
-                bullets.push({ x: bulletX_R, y: bulletY_R, width: 4, height: 15 });
-            });
-        }
+            const wingWidth = p_width;
+            const wingRearY = -12 * (p_height / 40);
+            const wingFrontY = -28 * (p_height / 40);
 
-        function fireMissile() {
-            const now = Date.now();
-            if (now - lastMissileTime < missileCooldown) return;
-            lastMissileTime = now;
+            ctx.fillStyle = el.detailColor2;
+            ctx.beginPath();
+            ctx.moveTo(-p_width / 4, wingRearY);
+            ctx.lineTo(-p_width / 4 - wingWidth, wingRearY);
+            ctx.lineTo(-p_width / 4, wingFrontY);
+            ctx.closePath();
+            ctx.fill();
 
-            const initialWidth = 10;
-            const initialHeight = 25;
-            missiles.push({
-                x: player.x,
-                y: player.y - player.height,
-                width: initialWidth,
-                height: initialHeight,
-                initialWidth: initialWidth,
-                initialHeight: initialHeight,
-                speed: missileSpeed,
-                firedTime: Date.now()
-            });
-        }
+            ctx.beginPath();
+            ctx.moveTo(p_width / 4, wingRearY);
+            ctx.lineTo(p_width / 4 + wingWidth, wingRearY);
+            ctx.lineTo(p_width / 4, wingFrontY);
+            ctx.closePath();
+            ctx.fill();
 
-        function handleBullets() {
-            for (let i = bullets.length - 1; i >= 0; i--) {
-                const bullet = bullets[i];
-                bullet.y -= bulletSpeed;
-
-                const gradient = ctx.createLinearGradient(bullet.x - bullet.width / 2, bullet.y, bullet.x + bullet.width / 2, bullet.y);
-                gradient.addColorStop(0, 'orange');
-                gradient.addColorStop(0.5, 'yellow');
-                gradient.addColorStop(1, 'orange');
-
-                ctx.fillStyle = gradient;
-                ctx.fillRect(bullet.x - bullet.width / 2, bullet.y - bullet.height, bullet.width, bullet.height);
-
-                if (bullet.y < -canvas.height / 2) {
-                    bullets.splice(i, 1);
-                }
-            }
-        }
-        
-        function handleMissiles() {
-            for (let i = missiles.length - 1; i >= 0; i--) {
-                const missile = missiles[i];
-                missile.y -= missile.speed;
-                missile.speed *= missileDeceleration; 
-
-                const sizeRatio = Math.max(missile.speed / missileSpeed, 0.1);
-                missile.width = missile.initialWidth * sizeRatio;
-                missile.height = missile.initialHeight * sizeRatio;
-
-                if (Date.now() - missile.firedTime > 1000) {
-                    explosions.push({ x: missile.x, y: missile.y, radius: 0, maxRadius: 100, creationTime: Date.now() });
-                    missiles.splice(i, 1);
-                    continue;
-                }
-
-                ctx.fillStyle = 'lightgrey';
-                ctx.fillRect(missile.x - missile.width / 2, missile.y - missile.height, missile.width, missile.height);
+            if (el.isUpgraded) {
                 ctx.fillStyle = 'red';
-                ctx.fillRect(missile.x - missile.width / 4, missile.y - missile.height - 3, missile.width / 2, 3);
-
-
-                if (missile.y < -canvas.height / 2) {
-                    missiles.splice(i, 1);
-                }
-            }
-        }
-        
-        function handleExplosions() {
-             for (let i = explosions.length - 1; i >= 0; i--) {
-                const explosion = explosions[i];
-                
-                const duration = 700; 
-                const elapsed = Date.now() - explosion.creationTime;
-
-                if (elapsed > duration) {
-                    explosions.splice(i, 1);
-                    continue;
-                }
-
-                const progress = elapsed / duration;
-                const easeOutProgress = 1 - Math.pow(1 - progress, 3);
-                explosion.radius = explosion.maxRadius * easeOutProgress;
-                
-                const alpha = 1 - progress;
-
-                const gradient = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, explosion.radius);
-                gradient.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
-                gradient.addColorStop(0.4, `rgba(255, 255, 0, ${alpha})`);
-                gradient.addColorStop(0.8, `rgba(255, 100, 0, ${alpha * 0.7})`);
-                gradient.addColorStop(1, `rgba(255, 0, 0, 0)`);
-
-
-                ctx.fillStyle = gradient;
                 ctx.beginPath();
-                ctx.arc(explosion.x, explosion.y, explosion.radius, 0, Math.PI * 2);
+                ctx.moveTo(-p_width / 4 - wingWidth, wingRearY);
+                ctx.lineTo(-p_width / 4 - wingWidth - 5, wingRearY + 5);
+                ctx.lineTo(-p_width / 4 - wingWidth, wingRearY + 10);
+                ctx.closePath();
+                ctx.fill();
+                ctx.beginPath();
+                ctx.moveTo(p_width / 4 + wingWidth, wingRearY);
+                ctx.lineTo(p_width / 4 + wingWidth + 5, wingRearY + 5);
+                ctx.lineTo(p_width / 4 + wingWidth, wingRearY + 10);
+                ctx.closePath();
                 ctx.fill();
             }
         }
-        
-        function handleCollisions() {
-            // 총알 vs 탱크
-            for (let i = bullets.length - 1; i >= 0; i--) {
-                const bullet = bullets[i];
-                for (let j = 0; j < backgroundElements.length; j++) {
-                    const tank = backgroundElements[j];
-                    if (tank.type === 'tank' && !tank.destroyed) {
-                        const dx = bullet.x - tank.x;
-                        const dy = bullet.y - tank.y;
-                        const distance = Math.sqrt(dx * dx + dy * dy);
-                        const tankRadius = Math.max(tank.bodyWidth, tank.bodyHeight) / 2;
+       
+        function drawBossBody(el) {
+            // 보스 텍스쳐 변경 요청 반영: 둥근 직사각형 몸체, 미사일 발사기, 날개 등
+            const w = el.width;
+            const h = el.height;
+           
+            // 둥근 직사각형 몸체 (베이지)
+            ctx.fillStyle = '#F5F5DC';
+            drawRoundedRect(-w/2, -h/2, w, h, 20, '#F5F5DC', null);
+           
+            // 미사일 발사기 (검은색 박스, 몸체 위)
+            ctx.fillStyle = 'black';
+            const launcherW = w * 0.4;
+            const launcherH = h * 0.2;
+            ctx.fillRect(-launcherW/2, -h/2 - launcherH/2, launcherW, launcherH);
 
-                        if (distance < tankRadius) {
-                            tank.destroyed = true;
-                            // 미사일 폭발보다 작은 폭발 생성
-                            explosions.push({ x: tank.x, y: tank.y, radius: 0, maxRadius: 60, creationTime: Date.now() });
-                            bullets.splice(i, 1);
-                            break; // 총알이 사라졌으므로 다음 총알 검사
-                        }
-                    }
-                }
-            }
+            // 날개 (검은색 날개 + 회색 막대)
+            // 플레이어 날개 스타일과 유사하게
+            const wingW = w * 0.8; // 넓게
+            const wingY1 = 0;
+            const wingY2 = -h/2;
+           
+            ctx.fillStyle = 'black';
+            // 왼쪽
+            ctx.beginPath();
+            ctx.moveTo(-w/2, wingY1);
+            ctx.lineTo(-w/2 - wingW, wingY1);
+            ctx.lineTo(-w/2, wingY2);
+            ctx.closePath(); ctx.fill();
+            // 오른쪽
+            ctx.beginPath();
+            ctx.moveTo(w/2, wingY1);
+            ctx.lineTo(w/2 + wingW, wingY1);
+            ctx.lineTo(w/2, wingY2);
+            ctx.closePath(); ctx.fill();
+           
+            // 회색 막대 (날개 위)
+            ctx.fillStyle = 'gray';
+            const stickW = 10;
+            ctx.fillRect(-w/2 - wingW/2, wingY1-5, stickW, 30);
+            ctx.fillRect(w/2 + wingW/2 - stickW, wingY1-5, stickW, 30);
 
-            // 미사일 폭발 vs 탱크
-            for (const explosion of explosions) {
-                // 미사일 폭발(큰 것)만 다른 탱크를 파괴하도록 함
-                if (explosion.maxRadius < 100) continue;
-
-                for (const tank of backgroundElements) {
-                    if (tank.type === 'tank' && !tank.destroyed) {
-                        const dx = explosion.x - tank.x;
-                        const dy = explosion.y - tank.y;
-                        const distance = Math.sqrt(dx * dx + dy * dy);
-
-                        // 폭발 반경 안에 탱크가 있으면 파괴
-                        if (distance < explosion.radius) {
-                            tank.destroyed = true;
-                            explosions.push({ x: tank.x, y: tank.y, radius: 0, maxRadius: 60, creationTime: Date.now() });
-                        }
-                    }
-                }
-            }
+            // 전방 세갈래 총알 발사기
+            ctx.fillStyle = '#333';
+            const gunW = 15;
+            const gunH = 30;
+            ctx.fillRect(-w/4, h/2, gunW, gunH); // 좌
+            ctx.fillRect(-gunW/2, h/2 + 10, gunW, gunH); // 중
+            ctx.fillRect(w/4 - gunW, h/2, gunW, gunH); // 우
         }
 
+        function drawBoss() {
+            if (!boss) return;
 
-        function updatePlayerPosition() {
-            // 수정된 날개 너비에 맞게 경계 재설정
-            const wingSpan = player.width + (player.width * 2); 
-            const leftBoundary = -canvas.width / 2 + wingSpan / 2;
-            const rightBoundary = canvas.width / 2 - wingSpan / 2;
-            const topBoundary = -canvas.height / 2 + player.height;
-            const bottomBoundary = canvas.height / 2;
-
-            if (keys['KeyW'] && player.y > topBoundary) player.y -= player.speed;
-            if (keys['KeyS'] && player.y < bottomBoundary) player.y += player.speed;
-            if (keys['KeyA'] && player.x > leftBoundary) player.x -= player.speed;
-            if (keys['KeyD'] && player.x < rightBoundary) player.x += player.speed;
-            
-            if (keys['Space']) shoot();
-            if (keys['KeyE']) fireMissile();
-        }
-
-        function gameLoop() {
+            let scale = 1;
+            if (boss.state === 'dying') {
+                const elapsed = Date.now() - boss.deathTime;
+                scale = Math.max(1 - (elapsed / 5000), 0);
+            }
+           
             ctx.save();
-            ctx.translate(canvas.width / 2, canvas.height / 2);
-
-            // 캔버스 지우기 (초록색 배경)
-            ctx.fillStyle = 'green';
-            ctx.fillRect(-canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
-            
-            handleBackground();
-            updatePlayerPosition();
-            handleCollisions(); // 충돌 감지 추가
-
-            drawPlayer();
-            handleBullets();
-            handleMissiles();
-            handleExplosions();
-
+            ctx.translate(boss.x, boss.y);
+            ctx.scale(scale, scale);
+            ctx.rotate(boss.angle);
+           
+            drawBossBody(boss);
+           
             ctx.restore();
+        }
 
+        function drawRoundedRect(x, y, w, h, r, fill, stroke) {
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.lineTo(x + w - r, y);
+            ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+            ctx.lineTo(x + w, y + h - r);
+            ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+            ctx.lineTo(x + r, y + h);
+            ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+            ctx.lineTo(x, y + r);
+            ctx.quadraticCurveTo(x, y, x + r, y);
+            ctx.closePath();
+            if (fill) {
+                ctx.fillStyle = fill;
+                ctx.fill();
+            }
+            if (stroke) {
+                ctx.strokeStyle = stroke;
+                ctx.stroke();
+            }
+        }
+
+        function drawHealthBar() {
+            const {x, y, segmentWidth, segmentHeight, spacing} = healthBarInfo;
+            ctx.lineWidth = 3;
+            drawRoundedRect(x - 10, y - 10, healthBarContainerWidth, segmentHeight + 20, 10, null, 'white');
+            for (let i = 0; i < player.health; i++) {
+                drawRoundedRect(x + i * (segmentWidth + spacing), y, segmentWidth, segmentHeight, 5, 'red', null);
+            }
+        }
+       
+        function formatScore(num) {
+            if (num < 1000) return num;
+            if (num < 1000000) return (num / 1000).toFixed(1) + 'K';
+            if (num < 1000000000) return (num / 1000000).toFixed(1) + 'M';
+            return (num / 1000000000).toFixed(1) + 'B';
+        }
+
+        function drawScore() {
+            ctx.font = "30px 'Arial Black', sans-serif"; // 원래 폰트
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'top';
+            ctx.fillText(`SCORE: ${formatScore(score)}`, canvas.width - 20, 20);
+        }
+
+        function drawBossHealthBar() {
+            const barWidth = canvas.width * 0.6;
+            const barHeight = 25;
+            const barX = (canvas.width - barWidth) / 2;
+            const barY = 40;
+
+            const healthPercentage = boss.health / boss.maxHealth;
+           
+            ctx.fillStyle = '#333';
+            ctx.fillRect(barX, barY, barWidth, barHeight);
+           
+            const healthGradient = ctx.createLinearGradient(barX, 0, barX + barWidth, 0);
+            healthGradient.addColorStop(0, 'red');
+            healthGradient.addColorStop(0.5, 'orange');
+            healthGradient.addColorStop(1, 'yellow');
+            ctx.fillStyle = healthGradient;
+            ctx.fillRect(barX, barY, barWidth * healthPercentage, barHeight);
+
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(barX, barY, barWidth, barHeight);
+
+            ctx.font = "bold 20px 'Arial Black', sans-serif"; // 원래 폰트
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText("THE JET", canvas.width / 2, barY - 5);
+        }
+
+        function drawPauseButton() {
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 3;
+            drawRoundedRect(pauseButton.x, pauseButton.y, pauseButton.width, pauseButton.height, 5, null, 'white');
+            ctx.fillStyle = 'white';
+            if (gameState === 'playing') {
+                const barWidth = 6, barHeight = 20;
+                ctx.fillRect(pauseButton.x + pauseButton.width/2 - barWidth*1.5, pauseButton.y + (pauseButton.height-barHeight)/2, barWidth, barHeight);
+                ctx.fillRect(pauseButton.x + pauseButton.width/2 + barWidth*0.5, pauseButton.y + (pauseButton.height-barHeight)/2, barWidth, barHeight);
+            } else {
+                ctx.beginPath();
+                ctx.moveTo(pauseButton.x + 12, pauseButton.y + 10);
+                ctx.lineTo(pauseButton.x + 12, pauseButton.y + 30);
+                ctx.lineTo(pauseButton.x + 32, pauseButton.y + 20);
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+       
+        function drawPauseScreen() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawRoundedRect(pauseWindow.x, pauseWindow.y, pauseWindow.width, pauseWindow.height, 10, '#f0f0f0', '#555');
+           
+            ctx.font = '50px Arial';
+            ctx.fillStyle = '#333';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('일시정지', canvas.width / 2, pauseWindow.y + 40);
+
+            drawRoundedRect(closeButton.x, closeButton.y, closeButton.width, closeButton.height, 5, '#e0e0e0', '#555');
+            ctx.font = '24px Arial';
+            ctx.fillStyle = '#333';
+            ctx.fillText('X', closeButton.x + closeButton.width / 2, closeButton.y + 16);
+           
+            const buttonFont = '30px Arial';
+            drawRoundedRect(homePauseButton.x, homePauseButton.y, homePauseButton.width, homePauseButton.height, 10, '#ddd', '#333');
+            ctx.font = buttonFont;
+            ctx.fillStyle = '#333';
+            ctx.fillText('홈으로', homePauseButton.x + homePauseButton.width / 2, homePauseButton.y + homePauseButton.height / 2);
+        }
+
+        function drawGameOverScreen() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.font = '80px Arial';
+            ctx.fillStyle = 'red';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+
+            const buttonFont = '30px Arial';
+            drawRoundedRect(restartButton.x, restartButton.y, restartButton.width, restartButton.height, 10, '#ddd', '#333');
+            ctx.font = buttonFont;
+            ctx.fillStyle = '#333';
+            ctx.fillText('재시작', canvas.width / 2, restartButton.y + restartButton.height / 2);
+
+            drawRoundedRect(homeButton.x, homeButton.y, homeButton.width, homeButton.height, 10, '#ddd', '#333');
+            ctx.font = buttonFont;
+            ctx.fillStyle = '#333';
+            ctx.fillText('홈으로', canvas.width / 2, homeButton.y + homeButton.height / 2);
+        }
+       
+        function drawOpeningTransition() {
+            const curtainHeight = canvas.height / 2 * (1 - openingAnim.progress);
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, canvas.width, Math.ceil(curtainHeight));
+            ctx.fillRect(0, canvas.height - Math.ceil(curtainHeight), canvas.width, Math.ceil(curtainHeight));
+        }
+
+        function drawBossWarning() {
+            const elapsed = Date.now() - bossWarning.startTime;
+            const blinkInterval = 250;
+            const totalBlinks = 24;
+
+            if (elapsed > blinkInterval * totalBlinks) {
+                bossWarning.active = false;
+                bossWarning.pendingSpawn = true;
+                bossWarning.spawnStartTime = Date.now();
+                return;
+            }
+
+            const isVisible = Math.floor(elapsed / blinkInterval) % 2 === 0;
+
+            if (isVisible) {
+                ctx.fillStyle = 'rgba(255, 255, 0, 0.5)';
+                const rectHeight = 150;
+                ctx.fillRect(0, canvas.height / 2 - rectHeight / 2, canvas.width, rectHeight);
+
+                const textFont = "bold 120px 'Impact', 'Arial Black', sans-serif";
+                ctx.font = textFont;
+                ctx.fillStyle = 'black';
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 6;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.strokeText("BOSS", canvas.width / 2, canvas.height / 2);
+                ctx.fillText("BOSS", canvas.width / 2, canvas.height / 2);
+            }
+        }
+
+        function drawBossDestroyedMessage() {
+            const elapsed = Date.now() - bossDestroyedMessage.startTime;
+            if (elapsed > bossDestroyedMessage.duration) {
+                bossDestroyedMessage.active = false;
+                return;
+            }
+
+            const alpha = 1.0 - (elapsed / bossDestroyedMessage.duration);
+            ctx.save();
+            ctx.globalAlpha = alpha;
+           
+            const textFont = "bold 100px 'Impact', 'Arial Black', sans-serif";
+            ctx.font = textFont;
+            ctx.fillStyle = 'black';
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 6;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.strokeText("BOSS DESTROYED", canvas.width / 2, canvas.height / 2);
+            ctx.fillText("BOSS DESTROYED", canvas.width / 2, canvas.height / 2);
+           
+            ctx.restore();
+        }
+       
+        function drawBossDefeatedIcon() {
+            if (!bossDefeated) return;
+           
+            const iconWidth = player.width * 1.5;
+            const iconHeight = player.height * 1.5;
+            const iconX = canvas.width - iconWidth * 1.5;
+            const iconY = canvas.height - iconHeight * 1.5;
+           
+            const dummyBoss = {
+                bodyWidth: iconWidth,
+                bodyHeight: iconHeight,
+                color: '#A5935F',
+                detailColor1: '#8B4513',
+                detailColor2: '#696969',
+                isUpgraded: true
+            };
+
+            ctx.save();
+            ctx.translate(iconX, iconY);
+            // The fighter body is drawn facing up, but we want it to face down in the icon
+            ctx.translate(iconWidth / 2, iconHeight / 2);
+            ctx.rotate(Math.PI);
+            ctx.translate(-iconWidth / 2, -iconHeight / 2);
+
+            drawEnemyFighterBody(dummyBoss);
+            ctx.restore();
+        }
+
+        // --- MAIN GAME LOOP ---
+        function gameLoop() {
+            if (gameState === 'startScreen') {
+                drawStartScreen();
+            } else if (gameState === 'transitionIn') {
+                drawAll();
+                drawOpeningTransition();
+               
+                openingAnim.progress += 1 / (openingAnim.duration / (1000/60));
+                if (openingAnim.progress >= 1) {
+                    gameState = 'playing';
+                }
+            } else {
+                if (gameState === 'playing') {
+                    updateAll();
+                }
+                drawAll();
+            }
             requestAnimationFrame(gameLoop);
         }
 
-        // 게임 시작
-        initializeBackground();
+        // --- GAME START ---
+        resizeCanvas();
+        initializeStartScreen();
         gameLoop();
     </script>
 </body>
 </html>
-
